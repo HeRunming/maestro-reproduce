@@ -1,0 +1,19 @@
+.venv/
+.cache/
+.lake/
+.setup-tmp/
+vendor/
+runs/
+logs/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.claude/
+.env
+.env.*
+!.env.example
+
+# Local provider configs (private endpoints); copy from configs/*.example.toml
+configs/claude.toml
+configs/gpt.toml

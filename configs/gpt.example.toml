@@ -1,0 +1,11 @@
+[provider]
+protocol = "openai"
+model = "gpt-6.1-sol"
+base_url = "https://your-openai-compatible-endpoint/v1"
+key_env = "OPENAI_API_KEY"
+max_tokens = 16000
+effort = "high"
+timeout = 600
+
+[mcp]
+enabled = true

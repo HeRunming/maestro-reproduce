@@ -1,0 +1,20 @@
+project = "/data/hrm/lean_workspace"
+concurrency = 3
+output_budget = 250000
+max_turns = 40
+max_events = 100
+wall_seconds = 3600
+compile_seconds = 120
+planner_rounds = 6
+mode = "maestro"
+
+[provider]
+protocol = "anthropic"
+model = "claude-opus-5-5"
+key_env = "ANTHROPIC_API_KEY"
+# base_url = "https://your-messages-api.example"
+max_tokens = 16000
+effort = "high"
+timeout = 600
+# GPT: protocol="openai", key_env="OPENAI_API_KEY", model=<your model>.
+# OpenAI adapter currently uses Chat Completions, not Responses.

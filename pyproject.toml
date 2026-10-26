@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maestro-lean"
+version = "0.1.0"
+description = "Event-driven global coordination for Lean proofs"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.10", "anthropic>=0.70", "openai>=2"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[project.scripts]
+maestro = "maestro.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+maestro = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["lean: uses the installed Lean toolchain"]
+
+[tool.ruff]
+line-length = 100
