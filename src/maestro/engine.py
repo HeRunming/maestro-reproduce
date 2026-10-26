@@ -7,6 +7,7 @@ from .agent import Budget, BudgetExceeded, Session, interact
 from .contracts import Contract
 from .lean import Lean
 from .models import Decision, Diagnosis, Event, Result, Status
+from pydantic import ValidationError
 from .prompts import prompt
 from .tools import Tools
 from .workspace import Workspace
@@ -82,8 +83,15 @@ class Engine:
             return
         # Derive the fully quantified proposition from Lean's elaborated type.
         root = self.ws.contract.root.name
-        info = next(i for i in self.ws.check_result.inspections if i.name.endswith(root))
-        # Printed names are namespace-relative at the inspection site.
+        # Use exact suffix match with namespace separator to avoid name collisions
+        # (e.g. root "zero" must not match helper "add_nonzero").
+        candidates = [i for i in self.ws.check_result.inspections
+                      if i.name == root or i.name.endswith('.' + root)]
+        if not candidates:
+            self.ws.journal.record('falsify_no_root', root=root,
+                                   available=[i.name for i in self.ws.check_result.inspections])
+            return
+        info = candidates[0]
         from .models import Goal
         neg = Goal(name='maestro_root_negation', signature=f'theorem maestro_root_negation : ¬ ({info.type})')
         contract = Contract(self.ws.contract.prefix, self.ws.contract.suffix, neg)
@@ -183,16 +191,27 @@ class Engine:
                     state = {'source': ws.source, 'revision': ws.revision, 'open': ws.open_goals,
                              'event': event.model_dump(), 'active': [(k, r, g) for k, (_, r, g) in self.running.items()]}
                     raw = await interact(coordinator, json.dumps(state), None, cfg.max_turns)
-                    decision = Decision.model_validate(raw)
-                    ws.journal.record('decision', **decision.model_dump())
                     try:
-                        if decision.decision in ('PREPARE_DECOMPOSITION', 'SWITCH_TO_DECOMPOSITION') and not decision.actions:
-                            self.dispatch('planner', event.goal)
-                        else:
-                            await self.actions(decision)
-                    except ValueError as exc:
-                        ws.journal.record('action_rejected', detail=str(exc))
-                    if not self.running:
+                        decision = Decision.model_validate(raw)
+                    except ValidationError as exc:
+                        # A malformed decision is a coordinator error, not a run failure.
+                        ws.journal.record('decision_rejected', detail=str(exc))
+                        decision = None
+                    if decision:
+                        ws.journal.record('decision', **decision.model_dump())
+                        try:
+                            if decision.decision in ('PREPARE_DECOMPOSITION', 'SWITCH_TO_DECOMPOSITION') and not decision.actions:
+                                self.dispatch('planner', event.goal)
+                            else:
+                                await self.actions(decision)
+                        except ValueError as exc:
+                            ws.journal.record('action_rejected', detail=str(exc))
+                    # Coordinator source transactions can close the last goal.
+                    if not ws.open_goals:
+                        status = Status.PROVED
+                        (directory / 'final.lean').write_text(ws.source)
+                        break
+                    if not self.running and ws.open_goals:
                         self.dispatch('prover', ws.open_goals[0])
                 else:
                     status, detail = Status.BUDGET, 'event limit reached'

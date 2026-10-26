@@ -48,7 +48,11 @@ class Lean:
         inspections = []
         for line in output.splitlines():
             if 'MAESTRO_JSON:' in line:
-                inspections.append(Inspection.model_validate(json.loads(line.split('MAESTRO_JSON:', 1)[1])))
+                try:
+                    inspections.append(Inspection.model_validate(json.loads(line.split('MAESTRO_JSON:', 1)[1])))
+                except (json.JSONDecodeError, Exception):
+                    # Malformed JSON in inspection output: treat as compilation failure.
+                    return Check(ok=False, output=f'malformed inspection JSON: {line[:200]}\n{output}')
         allowed = {'propext', 'Classical.choice', 'Quot.sound', 'sorryAx'}
         ok = proc.returncode == 0 and len(inspections) == len(goals)
         ok = ok and all(i.is_theorem and set(i.axioms) <= allowed for i in inspections)

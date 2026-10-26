@@ -40,17 +40,21 @@ class Workspace:
         os.replace(pointer, self.directory / 'CURRENT')
         self.journal.record('revision', revision=self.revision, sha256=hashlib.sha256(self.source.encode()).hexdigest())
 
+    async def _commit_locked(self, source: str):
+        """Must be called with self.lock already held."""
+        result = await self.lean.check(self.contract, source, self.directory / 'checks')
+        if not result.ok:
+            raise ValueError(result.output)
+        self.source, self.check_result = source, result
+        self.revision += 1
+        self._save()
+        return result
+
     async def commit(self, source: str, base: int):
         async with self.lock:
             if base != self.revision:
                 raise ValueError('stale workspace revision')
-            result = await self.lean.check(self.contract, source, self.directory / 'checks')
-            if not result.ok:
-                raise ValueError(result.output)
-            self.source, self.check_result = source, result
-            self.revision += 1
-            self._save()
-            return result
+            return await self._commit_locked(source)
 
     async def initialize(self):
         return await self.commit(self.source, self.revision)
@@ -61,7 +65,10 @@ class Workspace:
 
     @property
     def open_goals(self):
-        return self.check_result.open if self.check_result else [g.name for g in self.goals]
+        # Guard against a check_result that compiled but had subtly wrong axioms.
+        if self.check_result and self.check_result.ok:
+            return self.check_result.open
+        return [g.name for g in self.goals]
 
     def replace_proof(self, name: str, proof: str, source: str | None = None):
         goals = self.contract.validate(source or self.source)
@@ -70,12 +77,16 @@ class Workspace:
         return self.contract.render('\n\n'.join(g.signature + ' := ' + (proof if g.name == name else g.proof) for g in goals))
 
     async def merge_proof(self, name: str, candidate: str, base: int):
-        incoming = self.contract.validate(candidate)
-        current = {g.name: g for g in self.goals}
-        goal = next(g for g in incoming if g.name == name)
-        if name not in current or current[name].signature != goal.signature:
-            raise ValueError('obsolete target signature')
-        if base != self.revision:
-            self.journal.record('stale_revalidation', goal=name, base=base, current=self.revision)
-        # Never merge unrelated worker source edits; recompile against current state.
-        return await self.commit(self.replace_proof(name, goal.proof), self.revision)
+        # Hold the lock for the entire operation to prevent TOCTOU races when
+        # multiple workers complete concurrently at the same revision.
+        async with self.lock:
+            incoming = self.contract.validate(candidate)
+            current = {g.name: g for g in self.goals}  # reads self.source under lock
+            goal = next(g for g in incoming if g.name == name)
+            if name not in current or current[name].signature != goal.signature:
+                raise ValueError('obsolete target signature')
+            if base != self.revision:
+                self.journal.record('stale_revalidation', goal=name, base=base, current=self.revision)
+            # Recompile against current state; discard any unrelated source edits from the worker.
+            new_source = self.replace_proof(name, goal.proof)
+            return await self._commit_locked(new_source)

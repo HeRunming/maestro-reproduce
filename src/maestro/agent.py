@@ -118,11 +118,14 @@ def object_response(text):
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        # Claude sometimes wraps JSON in prose; try to extract the first {…} block.
+        # Model sometimes wraps JSON in prose; extract the first balanced {…} block.
         import re
         m = re.search(r'\{.*\}', text, re.DOTALL)
         if m:
-            data = json.loads(m.group())
+            try:
+                data = json.loads(m.group())
+            except json.JSONDecodeError:
+                raise ValueError(f'no valid JSON object found in provider response: {text[:300]}')
         else:
             raise ValueError(f'no JSON object found in provider response: {text[:300]}')
     if not isinstance(data, dict):
@@ -138,6 +141,9 @@ async def interact(session, prompt, toolbox, max_turns):
             raise ValueError(f'provider stopped without valid output: {reply.stop}')
         if not reply.calls:
             return object_response(reply.text)
+        if toolbox is None:
+            # Coordinator has no tools; a tool call from the model is a protocol error.
+            raise ValueError(f'unexpected tool call from provider when no tools provided: {reply.calls[0][1]}')
         results = []
         for call_id, name, args in reply.calls:
             try:
