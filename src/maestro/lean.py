@@ -25,15 +25,15 @@ class Lean:
         path = directory / f'check_{uuid.uuid4().hex}.lean'
         # Inspector must precede namespaces. Its import is harness-owned.
         checks = '\n'.join(f'#maestro_inspect {g.name}' for g in goals)
-        body = source.replace('\n-- MAESTRO GENERATED END\n', '\n' + checks + '\n-- MAESTRO GENERATED END\n')
+        body = source.replace('\n-- MAESTRO GENERATED END\n', '\n' + checks + '\n-- MAESTRO GENERATED END\n', 1)
         # Keep every frozen import ahead of the harness command definition.
         import re
         imports = re.findall(r'(?m)^import[^\n]*\n?', body)
         body = re.sub(r'(?m)^import[^\n]*\n?', '', body)
         path.write_text(''.join(imports) + self.inspector + '\n' + body)
-        env = {**os.environ, 'ELAN_HOME': '/data/hrm/elan',
-               'TMPDIR': str(self.project / '.setup-tmp'),
+        env = {**os.environ, 'TMPDIR': str(self.project / '.setup-tmp'),
                'XDG_CACHE_HOME': str(self.project / '.cache')}
+        env.setdefault('ELAN_HOME', '/data/hrm/elan')
         async with self.slots:
             proc = await asyncio.create_subprocess_exec('lake', 'env', 'lean', str(path), cwd=self.project, env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
@@ -50,16 +50,21 @@ class Lean:
             if 'MAESTRO_JSON:' in line:
                 try:
                     inspections.append(Inspection.model_validate(json.loads(line.split('MAESTRO_JSON:', 1)[1])))
-                except (json.JSONDecodeError, Exception):
-                    # Malformed JSON in inspection output: treat as compilation failure.
-                    return Check(ok=False, output=f'malformed inspection JSON: {line[:200]}\n{output}')
+                except ValueError:  # JSONDecodeError and pydantic ValidationError
+                    return Check(ok=False, output=f'malformed inspection output: {line[:200]}\n{output}')
+        # Inspector names are namespace-qualified; pair them with goals explicitly.
+        by_goal = {}
+        for g in goals:
+            match = [i for i in inspections if i.name == g.name or i.name.endswith('.' + g.name)]
+            if len(match) == 1:
+                by_goal[g.name] = match[0]
         allowed = {'propext', 'Classical.choice', 'Quot.sound', 'sorryAx'}
-        ok = proc.returncode == 0 and len(inspections) == len(goals)
+        ok = proc.returncode == 0 and len(by_goal) == len(goals) == len(inspections)
         ok = ok and all(i.is_theorem and set(i.axioms) <= allowed for i in inspections)
-        closed = [g.name for g, i in zip(goals, inspections) if 'sorryAx' not in i.axioms]
-        frontier = [g.name for g, i in zip(goals, inspections)
-                    if 'sorryAx' in i.axioms and i.direct_sorry]
+        closed = [n for n, i in by_goal.items() if 'sorryAx' not in i.axioms]
+        frontier = [n for n, i in by_goal.items() if 'sorryAx' in i.axioms and i.direct_sorry]
+        root = by_goal.get(contract.root.name)
         return Check(ok=ok, inspections=inspections, closed=closed,
                      open=[g.name for g in goals if g.name not in closed],
-                     frontier=frontier,
+                     frontier=frontier, root_type_hash=root.type_hash if root else '',
                      output=output)

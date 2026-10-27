@@ -5,7 +5,9 @@ COMMON = files('maestro').joinpath('prompts/common.md').read_text()
 PROMPTS = {
 'prover': '''You are a local prover for the assigned theorem. Work in your private source,
 use Lean feedback, and report progress early and after meaningful developments.
-Preserve all other theorem signatures and proof bodies. Try genuinely different
+Only your target's proof and newly added theorems are merged back; edits to other
+existing theorems are discarded, and new theorems are placed just before your target.
+A new helper left as sorry becomes an open goal, not a proof. Try genuinely different
 mathematical mechanisms before declaring stuck. Diagnose whether the obstruction
 is local, global, or uncertain and identify the earliest responsible ancestor.
 A failed tactic or missing library lemma is not evidence of falsity. Report a
@@ -29,7 +31,11 @@ ADD_HELPER, RESTATE, REPAIR_PROOF, RETRACT, ABANDON, FALSIFY, KEEP.
 Source mutations require complete compiling source in source; JSON alone does not
 create declarations. RETRACT resets an existing proof; ABANDON requires a replacement
 source repairing consumers. Root signatures cannot change. Explorers publish only
-through your explicit source transaction. A suspect helper does not falsify the root.''',
+through your explicit source transaction. A suspect helper does not falsify the root.
+After a DECOMPOSE plan is merged the harness starts one prover per new frontier goal
+("frontier" = open goals whose own proof is sorry); do not REPROVE those again unless
+you want an additional independent attempt. Rejected events carry "rejected" and
+"merge" details in the payload. Targets must be existing theorem names.''',
 'proposer': '''Propose a mathematical decomposition of the assigned goal. You receive the goal
 name and the full current source as input; read them. Do not invent signatures: the
 goal must keep the exact signature it has in the source. List exact child statements,
@@ -49,10 +55,12 @@ Preserve valid pieces. Do not reject merely because proofs are not yet filled. R
  'translator': '''Translate the given mathematical plan into complete private Lean source. You
 receive the goal name, the current source, and the plan. Preserve frozen context and
 the root signature exactly. The goal named in the input is the one to decompose: its
-proof should now compose the children, leaving each hard child as sorry. New generated
-declarations must be named theorem declarations. Do not rename the entire parent into a
-child. Ensure all intended children are explicit and the whole file elaborates. Write
-source, check with Lean, then return {"translated":true}.''',
+proof should now compose the children, leaving each hard child as sorry. Children must
+be new theorem declarations with fresh names, placed before the goal. Only the goal's
+proof and the new children are merged back; changes to other theorems are discarded.
+Do not rename the entire parent into a child. Ensure all intended children are explicit
+and the whole file elaborates. Write source, check with Lean, then return
+{"translated":true}.''',
 'explorer': '''Independently investigate an alternative global proof architecture in this
 private snapshot. Existing helpers are history, not a boundary. You may replace
 or remove generated scaffolding, but not frozen context. Test the first load-bearing
@@ -60,10 +68,13 @@ transition with Lean. Return {"outcome":"candidate","strategy":"", "evidence":""
 "remaining_goals":[],"risk":""}; include complete candidate source via write_proof.
 Your candidate will never be published automatically. No majority-vote reasoning.''',
 'falsifier': '''Attempt to prove the negation of the COMPLETE root proposition under only
-frozen context. Return {"negation_proof":"by ...", "detail":"certificate explanation"}.
-The harness constructs the negation type itself, including every quantified parameter
-and premise. A counterexample must refute that full proposition, not just a fixed
-instantiation or generated helper. If no checked certificate exists return
+frozen context. The harness constructs the goal `¬ (type_of% @root)` itself, including
+every quantified parameter and premise; you supply only its proof. Test candidates
+with check_negation (pass the proof text, e.g. "by\\n  intro h\\n  ..."), which reports
+whether Lean accepts it as a certificate. A counterexample must refute that full
+proposition, not just a fixed instantiation or generated helper. Using the root
+theorem itself in the proof does not count. Return {"negation_proof":"by ...",
+"detail":"certificate explanation"} with a proof check_negation certified, or
 {"negation_proof":null,"detail":"inconclusive"}. Do not edit frozen source.''',
 }
 

@@ -76,11 +76,21 @@ are hard harness limits.
 |---|---|---|---|
 | FATE-X #1 | Claude Opus 5.5 | proved on first prover attempt | 3,418 |
 | FATE-X #2 | GPT-6.1-sol | proved on first prover attempt | 19,602 |
-| FATE-X #13 | Claude Opus 5.5 | event limit reached | 81,598 |
+| FATE-X #13 | Claude Opus 5.5 | wall-clock limit reached | 81,598 |
+| FATE-X #3 | Claude Opus 5.5, `initial_role = "planner"` | proved via decomposition | 106,507 |
 
 On #13 the coordinator classified two worker crashes as infrastructure failures and retried,
 then acted on a worker's quaternion counterexample by dispatching the falsifier. The crashes
-exposed two parsing bugs that are fixed in this version; #13 has not been rerun to completion.
+exposed parsing bugs that are fixed; #13 has not been rerun to completion.
+
+On #3 the planner (proposer → judge → translator) produced a Hall's-theorem scaffold with six
+new theorems. The harness started one prover per frontier goal; five ran concurrently from the
+same revision, and four of their results were rebased onto newer revisions without reverting
+already-proved siblings. Lean independently re-checked `final.lean`: 10 theorems, no `sorry`,
+axioms `propext`, `Quot.sound`, `Classical.choice`.
+
+`initial_role = "planner"` is a testing knob that skips the first prover attempt so the
+decomposition path runs even when a prover would succeed directly.
 
 ## Trust boundary
 

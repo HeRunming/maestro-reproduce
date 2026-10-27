@@ -10,6 +10,32 @@ class BudgetExceeded(Exception):
     pass
 
 
+class TransportError(Exception):
+    """Provider unreachable or failing after all retries."""
+
+
+RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
+TRANSPORT = ('RemoteProtocolError', 'ReadError', 'WriteError', 'ConnectError', 'ReadTimeout',
+             'WriteTimeout', 'ConnectTimeout', 'PoolTimeout', 'APIConnectionError', 'APITimeoutError')
+
+
+def retryable(exc):
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if getattr(exc, 'status_code', None) in RETRY_STATUS:
+        return True
+    return type(exc).__name__ in TRANSPORT
+
+
+def arguments(raw):
+    # Malformed tool arguments become a tool error the model can see, not a crash.
+    try:
+        value = json.loads(raw or '{}')
+        return value if isinstance(value, dict) else {'__invalid__': raw}
+    except json.JSONDecodeError:
+        return {'__invalid__': raw}
+
+
 class Budget:
     def __init__(self, total):
         self.total, self.used, self.reserved = total, 0, 0
@@ -42,77 +68,65 @@ class Session:
             raise ValueError(f'missing key environment variable: {config.key_env}')
         self.config, self.system, self.budget = config, system, budget
         self.history = []
+        # Retries are ours, so that every attempt is bounded by one wall-clock deadline.
+        # SDK timeouts are per read; keep-alive pings can hold a stalled stream open forever.
         if config.protocol == 'anthropic':
             from anthropic import AsyncAnthropic
             self.client = AsyncAnthropic(api_key=key, base_url=config.base_url,
-                                         timeout=config.timeout, max_retries=2)
+                                         timeout=config.timeout, max_retries=0)
         else:
             from openai import AsyncOpenAI
             self.client = AsyncOpenAI(api_key=key, base_url=config.base_url,
-                                     timeout=config.timeout, max_retries=2)
+                                     timeout=config.timeout, max_retries=0)
             self.history.append({'role': 'system', 'content': system})
 
     async def request(self, user, tools):
         if user is not None:
             self.history.append({'role': 'user', 'content': user})
         cfg = self.config
-        await self.budget.reserve(cfg.max_tokens)
-        used = cfg.max_tokens  # conservative charge until we know the real value
-        # Retry on transient transport errors (broken pipe, incomplete chunk, etc.).
-        # We only retry before any response tokens arrive, so history stays consistent.
-        last_exc = None
-        for attempt in range(3):
+        last = None
+        for attempt in range(cfg.retries + 1):
             if attempt:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(min(2 ** attempt, 30))
+            await self.budget.reserve(cfg.max_tokens)
+            # A failed attempt may still have been billed; charge the reservation.
+            used = cfg.max_tokens
             try:
-                used, reply = await self._attempt(tools)
-                await self.budget.settle(cfg.max_tokens, used)
+                used, reply = await asyncio.wait_for(self._attempt(tools), cfg.timeout)
                 return reply
             except Exception as exc:
-                # Re-raise budget exhaustion immediately; no point retrying.
-                if isinstance(exc, BudgetExceeded):
+                if not retryable(exc):
                     raise
-                # Classify as retryable only if no tokens were consumed.
-                name = type(exc).__name__
-                if any(s in name for s in ('RemoteProtocol', 'ReadError', 'ConnectError',
-                                           'TimeoutError', 'APIConnectionError',
-                                           'APITimeoutError', 'ReadTimeout')):
-                    last_exc = exc
-                    continue
-                # Non-transport error: charge conservatively and re-raise.
+                last = exc
+            finally:
                 await self.budget.settle(cfg.max_tokens, used)
-                raise
-        await self.budget.settle(cfg.max_tokens, used)
-        raise RuntimeError(f'transport error after 3 attempts: {last_exc}') from last_exc
+        raise TransportError(f'provider failed after {cfg.retries + 1} attempts: '
+                             f'{type(last).__name__}: {last}') from last
 
     async def _attempt(self, tools):
-        """Single API call; returns (tokens_used, Reply). Raises on any error."""
+        """Single API call; returns (tokens_used, Reply). History changes only on success."""
         cfg = self.config
-        used = cfg.max_tokens
-        try:
-            if cfg.protocol == 'anthropic':
-                async with self.client.messages.stream(model=cfg.model, max_tokens=cfg.max_tokens,
-                    system=self.system, messages=self.history, tools=tools,
-                    thinking={'type': 'adaptive'}, output_config={'effort': cfg.effort}) as stream:
-                    msg = await stream.get_final_message()
-                used = msg.usage.output_tokens
-                self.history.append({'role': 'assistant', 'content': msg.model_dump()['content']})
-                return used, Reply(
-                    ''.join(b.text for b in msg.content if b.type == 'text'),
-                    [(b.id, b.name, b.input) for b in msg.content if b.type == 'tool_use'],
-                    used, msg.stop_reason)
-            mapped = [{'type': 'function', 'function': {'name': t['name'],
-                'description': t['description'], 'parameters': t['input_schema']}} for t in tools]
-            msg = await self.client.chat.completions.create(model=cfg.model,
-                messages=self.history, tools=mapped or None, max_completion_tokens=cfg.max_tokens)
-            used = msg.usage.completion_tokens if msg.usage else cfg.max_tokens
-            choice = msg.choices[0]
-            self.history.append(choice.message.model_dump(exclude_none=True))
-            calls = [(c.id, c.function.name, json.loads(c.function.arguments))
-                     for c in choice.message.tool_calls or []]
-            return used, Reply(choice.message.content or '', calls, used, choice.finish_reason)
-        except Exception:
-            raise
+        if cfg.protocol == 'anthropic':
+            async with self.client.messages.stream(model=cfg.model, max_tokens=cfg.max_tokens,
+                system=self.system, messages=self.history, tools=tools,
+                thinking={'type': 'adaptive'}, output_config={'effort': cfg.effort}) as stream:
+                msg = await stream.get_final_message()
+            used = msg.usage.output_tokens
+            self.history.append({'role': 'assistant', 'content': msg.model_dump()['content']})
+            return used, Reply(
+                ''.join(b.text for b in msg.content if b.type == 'text'),
+                [(b.id, b.name, b.input) for b in msg.content if b.type == 'tool_use'],
+                used, msg.stop_reason)
+        mapped = [{'type': 'function', 'function': {'name': t['name'],
+            'description': t['description'], 'parameters': t['input_schema']}} for t in tools]
+        msg = await self.client.chat.completions.create(model=cfg.model,
+            messages=self.history, tools=mapped or None, max_completion_tokens=cfg.max_tokens)
+        used = msg.usage.completion_tokens if msg.usage else cfg.max_tokens
+        choice = msg.choices[0]
+        self.history.append(choice.message.model_dump(exclude_none=True))
+        calls = [(c.id, c.function.name, arguments(c.function.arguments))
+                 for c in choice.message.tool_calls or []]
+        return used, Reply(choice.message.content or '', calls, used, choice.finish_reason)
 
     def results(self, results):
         if self.config.protocol == 'anthropic':
@@ -167,14 +181,26 @@ def object_response(text):
     return data
 
 
+REPAIR = ('Your last reply was not a single JSON object ({error}). Reply again with only the '
+          'JSON object required by your instructions, with no prose or code fences.')
+
+
 async def interact(session, prompt, toolbox, max_turns):
+    repaired = False
     for _ in range(max_turns):
         reply = await session.request(prompt, toolbox.schemas if toolbox else [])
         prompt = None
         if reply.stop in ('max_tokens', 'length', 'refusal', 'content_filter'):
             raise ValueError(f'provider stopped without valid output: {reply.stop}')
         if not reply.calls:
-            return object_response(reply.text)
+            try:
+                return object_response(reply.text)
+            except (ValueError, TypeError) as exc:
+                if repaired:
+                    raise
+                repaired = True
+                prompt = REPAIR.format(error=str(exc)[:200])
+                continue
         if toolbox is None:
             # Coordinator has no tools; a tool call from the model is a protocol error.
             raise ValueError(f'unexpected tool call from provider when no tools provided: {reply.calls[0][1]}')
@@ -184,6 +210,6 @@ async def interact(session, prompt, toolbox, max_turns):
                 result = await toolbox.call(name, args)
                 results.append((call_id, json.dumps(result, default=str), False))
             except (ValueError, OSError, TimeoutError) as exc:
-                results.append((call_id, str(exc), True))
+                results.append((call_id, str(exc)[:6000], True))
         session.results(results)
     raise BudgetExceeded('agent tool-turn limit reached')

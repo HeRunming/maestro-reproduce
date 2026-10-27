@@ -29,20 +29,23 @@ def uncomment(text: str) -> str:
     return ''.join(out)
 
 
-# `open` is allowed (proofs need `open Classical in`); the root's elaborated type is
-# pinned by hash in Workspace, so opens cannot change what the root statement means.
+# `open` is allowed (proofs need `open Classical in`). Workspace pins the root's
+# elaborated type hash, so an `open ... in` cannot change what the root statement means.
 SAFE_OPTIONS = r'(?:maxHeartbeats|maxRecDepth|synthInstance\.maxHeartbeats|synthInstance\.maxSize|linter\.[\w.]+|pp\.[\w.]+|trace\.[\w.]+)'
 FORBIDDEN = re.compile(
     r'\b(import|namespace|end|section|axiom|constant|opaque|unsafe|partial|macro|elab|syntax|'
     r'initialize|attribute|run_tac|run_elab|run_cmd|run_meta|implemented_by|extern|def|abbrev|'
     r'instance|example|notation|infix|infixl|infixr|prefix|postfix|export|mutual|inductive|'
-    r'structure|class|deriving|command|builtin_initialize|by_elab|local|scoped)\b'
+    r'structure|class|deriving|command|builtin_initialize|by_elab|local|scoped|variable|universe|'
+    r'private|protected|noncomputable)\b'
     r'|\bset_option\s+(?!' + SAFE_OPTIONS + r'\b)'   # only whitelisted options
     r'|#'                                              # Lean commands
     r'|@\['                                            # attributes
     r'|\bLean\.'                                       # meta-level API
 )
 DECL = re.compile(r'(?m)^theorem\s+([A-Za-z_][\w\.]*)\b')
+# Generated regions also accept `lemma` (Mathlib syntax; elaborates to a theorem).
+GEN_DECL = re.compile(r'(?m)^(?:theorem|lemma)\s+([A-Za-z_][\w\.]*)\b')
 
 
 def assignment(text: str, start: int = 0) -> int:
@@ -63,7 +66,7 @@ def parse_goals(region: str) -> list[Goal]:
     clean = uncomment(region)
     if FORBIDDEN.search(clean):
         raise ValueError("unsupported or unsafe command in generated region")
-    matches = list(DECL.finditer(clean))
+    matches = list(GEN_DECL.finditer(clean))
     if not matches or clean[:matches[0].start()].strip():
         raise ValueError("generated region must contain only named theorem declarations")
     goals = []

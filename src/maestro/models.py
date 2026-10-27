@@ -15,16 +15,6 @@ class Status(StrEnum):
     ERROR = "infrastructure_error"
 
 
-class Diagnosis(Record):
-    outcome: str = "stuck_hard"
-    detail: str
-    failure_scope: str = "uncertain"
-    approaches_tried: list[str] = Field(default_factory=list)
-    repair_target: str | None = None
-    repair_proposal: str | None = None
-    witness: str | None = None
-
-
 class Lenient(BaseModel):
     """Model-authored records: unknown keys ignored, explicit nulls mean 'use the default'."""
     model_config = ConfigDict(extra="ignore")
@@ -35,6 +25,21 @@ class Lenient(BaseModel):
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if v is not None}
         return data
+
+
+class Diagnosis(Lenient):
+    outcome: str = "stuck_hard"
+    detail: str = ""
+    failure_scope: str = "uncertain"
+    approaches_tried: list[str] = Field(default_factory=list)
+    repair_target: str | None = None
+    repair_proposal: str | None = None
+    witness: str | None = None
+
+    @field_validator('approaches_tried', mode='before')
+    @classmethod
+    def _listify(cls, v):
+        return [v] if isinstance(v, str) else v
 
 
 class Action(Lenient):
@@ -100,6 +105,8 @@ class Check(Record):
     open: list[str] = Field(default_factory=list)
     # Open goals whose own proof contains sorry (the ones a prover should attack).
     frontier: list[str] = Field(default_factory=list)
+    # Structural hash of the root's elaborated type; pinned at initialization.
+    root_type_hash: str = ""
     inspections: list[Inspection] = Field(default_factory=list)
     output: str = ""
 

@@ -13,7 +13,8 @@ class ProviderConfig(Record):
     key_env: str = 'ANTHROPIC_API_KEY'
     max_tokens: int = Field(default=16000, ge=128)
     effort: str = 'high'
-    timeout: float = Field(default=600, gt=0)
+    timeout: float = Field(default=900, gt=0)  # hard wall-clock limit per request attempt
+    retries: int = Field(default=3, ge=0, le=10)
 
 
 class MCPConfig(Record):
@@ -34,6 +35,8 @@ class Config(Record):
     planner_rounds: int = Field(default=6, ge=1, le=6)
     explorer_cohort: int = Field(default=3, ge=1, le=15)
     mode: Literal['maestro', 'plain', 'naive'] = 'maestro'
+    # Testing knob: start with the planner instead of a prover (exercises decomposition).
+    initial_role: Literal['prover', 'planner'] = 'prover'
 
     @classmethod
     def load(cls, path: Path):
