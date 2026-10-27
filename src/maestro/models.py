@@ -1,6 +1,6 @@
 """Typed contracts shared by workers, coordinator, and verifier."""
 from enum import StrEnum
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Record(BaseModel):
@@ -25,26 +25,49 @@ class Diagnosis(Record):
     witness: str | None = None
 
 
-class Action(Record):
-    op: str
-    target: str = "root"
-    guidance: str = ""
-    source: str | None = None
-    explorer_count: int = Field(default=1, ge=1, le=15)
+class Lenient(BaseModel):
+    """Model-authored records: unknown keys ignored, explicit nulls mean 'use the default'."""
+    model_config = ConfigDict(extra="ignore")
 
     @model_validator(mode='before')
     @classmethod
     def _null_means_default(cls, data):
-        # Models often emit explicit nulls for optional fields; treat them as omitted.
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if v is not None or k == 'source'}
+            return {k: v for k, v in data.items() if v is not None}
         return data
 
 
-class Decision(Record):
+class Action(Lenient):
+    op: str
+    target: str = "root"
+    targets: list[str] = Field(default_factory=list)
+    guidance: str = ""
+    source: str | None = None
+    explorer_count: int = 1
+
+    @field_validator('op', mode='before')
+    @classmethod
+    def _upper(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
+
+    @field_validator('explorer_count', mode='before')
+    @classmethod
+    def _clamp(cls, v):
+        try:
+            return min(max(int(v), 1), 15)
+        except (TypeError, ValueError):
+            return 1
+
+
+class Decision(Lenient):
     decision: str = "ACT"
     diagnosis: str = ""
     actions: list[Action] = Field(default_factory=list)
+
+    @field_validator('decision', mode='before')
+    @classmethod
+    def _upper(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class Event(Record):
@@ -67,12 +90,16 @@ class Inspection(Record):
     type: str
     axioms: list[str]
     is_theorem: bool
+    direct_sorry: bool = False
+    type_hash: str = ""
 
 
 class Check(Record):
     ok: bool
     closed: list[str] = Field(default_factory=list)
     open: list[str] = Field(default_factory=list)
+    # Open goals whose own proof contains sorry (the ones a prover should attack).
+    frontier: list[str] = Field(default_factory=list)
     inspections: list[Inspection] = Field(default_factory=list)
     output: str = ""
 

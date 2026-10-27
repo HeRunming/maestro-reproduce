@@ -50,16 +50,24 @@ class Engine:
                     proposer, judge = self.session('proposer'), self.session('judge')
                     read = Tools(ws, source, tools.directory, readonly=True, mcp=self.mcp)
                     accepted = False
+                    plan = None
+                    verdict = None
                     for _ in range(self.config.planner_rounds):
                         plan = await interact(proposer, request, read, self.config.max_turns)
-                        verdict = await interact(judge, json.dumps(plan), read, self.config.max_turns)
-                        if verdict.get('direction_gate_pass') is True and verdict.get('layering_gate_pass') is True and not verdict.get('blockers'):
+                        verdict = await interact(judge, json.dumps({'goal': goal, 'source': source, 'plan': plan}),
+                                                 read, self.config.max_turns)
+                        if (verdict.get('direction_gate_pass') is True
+                                and verdict.get('layering_gate_pass') is True
+                                and not verdict.get('blockers')):
                             accepted = True
                             break
-                        request = json.dumps({'plan': plan, 'feedback': verdict})
+                        request = json.dumps({'goal': goal, 'source': source,
+                                              'plan': plan, 'feedback': verdict})
                     if not accepted:
                         raise ValueError('planner judge rejected plan: ' + json.dumps(verdict))
-                    output = await interact(self.session('translator'), json.dumps({'plan': plan, 'source': source}), tools, self.config.max_turns)
+                    output = await interact(self.session('translator'),
+                                            json.dumps({'goal': goal, 'source': source, 'plan': plan}),
+                                            tools, self.config.max_turns)
                     output['plan'] = plan
                 elif role == 'explorer':
                     output = await interact(self.session(role), request, tools, self.config.max_turns)
@@ -150,6 +158,7 @@ class Engine:
                 raise ValueError('initial task failed validation')
             if cfg.mode == 'maestro':
                 coordinator = self.session('coordinator')
+            # Frontier = goals whose own proof is directly sorry; dispatch one.
             self.dispatch('prover', ws.contract.root.name)
             async with asyncio.timeout(cfg.wall_seconds):
                 for _ in range(cfg.max_events):
@@ -161,8 +170,14 @@ class Engine:
                         if event.kind == 'prover' and event.payload['output'].get('outcome') == 'proved':
                             await ws.merge_proof(event.goal, event.payload['source'], event.revision)
                         elif event.kind == 'planner':
-                            await ws.commit(event.payload['source'], event.revision)
-                            for name in ws.open_goals:
+                            source = event.payload['source']
+                            if not source or not source.strip():
+                                raise ValueError('planner returned empty source')
+                            await ws.commit(source, event.revision)
+                            # Only dispatch provers for frontier goals (direct sorry),
+                            # not for parent goals that just delegate to sub-goals.
+                            frontier = ws.check_result.frontier if ws.check_result else ws.open_goals
+                            for name in (frontier or ws.open_goals):
                                 self.dispatch('prover', name)
                         elif event.kind == 'explorer':
                             cohort_id = event.payload.get('cohort_id')
@@ -188,13 +203,17 @@ class Engine:
                         if not self.running:
                             self.dispatch('planner', event.goal)
                         continue
-                    state = {'source': ws.source, 'revision': ws.revision, 'open': ws.open_goals,
-                             'event': event.model_dump(), 'active': [(k, r, g) for k, (_, r, g) in self.running.items()]}
+                    frontier = ws.check_result.frontier if ws.check_result else ws.open_goals
+                    state = {
+                        'source': ws.source, 'revision': ws.revision,
+                        'open': ws.open_goals, 'frontier': frontier,
+                        'event': event.model_dump(),
+                        'active': [(k, r, g) for k, (_, r, g) in self.running.items()],
+                    }
                     raw = await interact(coordinator, json.dumps(state), None, cfg.max_turns)
                     try:
                         decision = Decision.model_validate(raw)
                     except ValidationError as exc:
-                        # A malformed decision is a coordinator error, not a run failure.
                         ws.journal.record('decision_rejected', detail=str(exc))
                         decision = None
                     if decision:
@@ -212,11 +231,13 @@ class Engine:
                         (directory / 'final.lean').write_text(ws.source)
                         break
                     if not self.running and ws.open_goals:
-                        self.dispatch('prover', ws.open_goals[0])
+                        # Fallback: nothing running and coordinator gave no new dispatch.
+                        target = (frontier or ws.open_goals)[0]
+                        self.dispatch('prover', target)
                 else:
-                    status, detail = Status.BUDGET, 'event limit reached'
+                    status, detail = Status.BUDGET, f'event limit reached ({cfg.max_events})'
         except (BudgetExceeded, TimeoutError) as exc:
-            status, detail = Status.BUDGET, str(exc)
+            status, detail = Status.BUDGET, str(exc) or type(exc).__name__
         except asyncio.CancelledError:
             status, detail = Status.CANCELLED, 'cancelled'
         except Exception as exc:

@@ -57,7 +57,38 @@ class Session:
             self.history.append({'role': 'user', 'content': user})
         cfg = self.config
         await self.budget.reserve(cfg.max_tokens)
-        used = cfg.max_tokens  # unknown failures conservatively charge the reservation
+        used = cfg.max_tokens  # conservative charge until we know the real value
+        # Retry on transient transport errors (broken pipe, incomplete chunk, etc.).
+        # We only retry before any response tokens arrive, so history stays consistent.
+        last_exc = None
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(2 ** attempt)
+            try:
+                used, reply = await self._attempt(tools)
+                await self.budget.settle(cfg.max_tokens, used)
+                return reply
+            except Exception as exc:
+                # Re-raise budget exhaustion immediately; no point retrying.
+                if isinstance(exc, BudgetExceeded):
+                    raise
+                # Classify as retryable only if no tokens were consumed.
+                name = type(exc).__name__
+                if any(s in name for s in ('RemoteProtocol', 'ReadError', 'ConnectError',
+                                           'TimeoutError', 'APIConnectionError',
+                                           'APITimeoutError', 'ReadTimeout')):
+                    last_exc = exc
+                    continue
+                # Non-transport error: charge conservatively and re-raise.
+                await self.budget.settle(cfg.max_tokens, used)
+                raise
+        await self.budget.settle(cfg.max_tokens, used)
+        raise RuntimeError(f'transport error after 3 attempts: {last_exc}') from last_exc
+
+    async def _attempt(self, tools):
+        """Single API call; returns (tokens_used, Reply). Raises on any error."""
+        cfg = self.config
+        used = cfg.max_tokens
         try:
             if cfg.protocol == 'anthropic':
                 async with self.client.messages.stream(model=cfg.model, max_tokens=cfg.max_tokens,
@@ -66,19 +97,22 @@ class Session:
                     msg = await stream.get_final_message()
                 used = msg.usage.output_tokens
                 self.history.append({'role': 'assistant', 'content': msg.model_dump()['content']})
-                return Reply(''.join(b.text for b in msg.content if b.type == 'text'),
-                             [(b.id, b.name, b.input) for b in msg.content if b.type == 'tool_use'],
-                             used, msg.stop_reason)
-            mapped = [{'type': 'function', 'function': {'name': t['name'], 'description': t['description'], 'parameters': t['input_schema']}} for t in tools]
+                return used, Reply(
+                    ''.join(b.text for b in msg.content if b.type == 'text'),
+                    [(b.id, b.name, b.input) for b in msg.content if b.type == 'tool_use'],
+                    used, msg.stop_reason)
+            mapped = [{'type': 'function', 'function': {'name': t['name'],
+                'description': t['description'], 'parameters': t['input_schema']}} for t in tools]
             msg = await self.client.chat.completions.create(model=cfg.model,
                 messages=self.history, tools=mapped or None, max_completion_tokens=cfg.max_tokens)
             used = msg.usage.completion_tokens if msg.usage else cfg.max_tokens
             choice = msg.choices[0]
             self.history.append(choice.message.model_dump(exclude_none=True))
-            calls = [(c.id, c.function.name, json.loads(c.function.arguments)) for c in choice.message.tool_calls or []]
-            return Reply(choice.message.content or '', calls, used, choice.finish_reason)
-        finally:
-            await self.budget.settle(cfg.max_tokens, used)
+            calls = [(c.id, c.function.name, json.loads(c.function.arguments))
+                     for c in choice.message.tool_calls or []]
+            return used, Reply(choice.message.content or '', calls, used, choice.finish_reason)
+        except Exception:
+            raise
 
     def results(self, results):
         if self.config.protocol == 'anthropic':

@@ -57,5 +57,9 @@ class Lean:
         ok = proc.returncode == 0 and len(inspections) == len(goals)
         ok = ok and all(i.is_theorem and set(i.axioms) <= allowed for i in inspections)
         closed = [g.name for g, i in zip(goals, inspections) if 'sorryAx' not in i.axioms]
+        frontier = [g.name for g, i in zip(goals, inspections)
+                    if 'sorryAx' in i.axioms and i.direct_sorry]
         return Check(ok=ok, inspections=inspections, closed=closed,
-                     open=[g.name for g in goals if g.name not in closed], output=output)
+                     open=[g.name for g in goals if g.name not in closed],
+                     frontier=frontier,
+                     output=output)

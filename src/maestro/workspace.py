@@ -77,16 +77,24 @@ class Workspace:
         return self.contract.render('\n\n'.join(g.signature + ' := ' + (proof if g.name == name else g.proof) for g in goals))
 
     async def merge_proof(self, name: str, candidate: str, base: int):
-        # Hold the lock for the entire operation to prevent TOCTOU races when
-        # multiple workers complete concurrently at the same revision.
+        # Hold the lock for the entire operation to prevent TOCTOU races.
+        # The candidate is the worker's complete Proof.lean; it may add helper
+        # theorems that the target's proof depends on. Committing only the
+        # target's proof body would drop those helpers (Bug: "Unknown identifier").
         async with self.lock:
             incoming = self.contract.validate(candidate)
-            current = {g.name: g for g in self.goals}  # reads self.source under lock
-            goal = next(g for g in incoming if g.name == name)
-            if name not in current or current[name].signature != goal.signature:
+            incoming_by_name = {g.name: g for g in incoming}
+            current = {g.name: g for g in self.goals}
+            if name not in incoming_by_name or name not in current:
+                raise ValueError('unknown target')
+            if current[name].signature != incoming_by_name[name].signature:
                 raise ValueError('obsolete target signature')
+            # Every pre-existing goal must still be present with the same signature.
+            for gname, g in current.items():
+                if gname not in incoming_by_name or incoming_by_name[gname].signature != g.signature:
+                    raise ValueError(f'existing goal {gname} missing or re-signed in candidate')
             if base != self.revision:
                 self.journal.record('stale_revalidation', goal=name, base=base, current=self.revision)
-            # Recompile against current state; discard any unrelated source edits from the worker.
-            new_source = self.replace_proof(name, goal.proof)
-            return await self._commit_locked(new_source)
+            # Commit the entire candidate: it carries the target's proof AND any
+            # new helpers. The Lean check verifies nothing regressed.
+            return await self._commit_locked(candidate)

@@ -29,7 +29,19 @@ def uncomment(text: str) -> str:
     return ''.join(out)
 
 
-FORBIDDEN = re.compile(r'\b(import|namespace|end|section|axiom|constant|opaque|unsafe|partial|macro|elab|syntax|initialize|attribute|set_option|run_tac|run_elab|implemented_by|def|instance|example|notation|open|export|mutual|inductive|structure|deriving|command|builtin_initialize)\b|#|@\[|\bLean\.')
+# `open` is allowed (proofs need `open Classical in`); the root's elaborated type is
+# pinned by hash in Workspace, so opens cannot change what the root statement means.
+SAFE_OPTIONS = r'(?:maxHeartbeats|maxRecDepth|synthInstance\.maxHeartbeats|synthInstance\.maxSize|linter\.[\w.]+|pp\.[\w.]+|trace\.[\w.]+)'
+FORBIDDEN = re.compile(
+    r'\b(import|namespace|end|section|axiom|constant|opaque|unsafe|partial|macro|elab|syntax|'
+    r'initialize|attribute|run_tac|run_elab|run_cmd|run_meta|implemented_by|extern|def|abbrev|'
+    r'instance|example|notation|infix|infixl|infixr|prefix|postfix|export|mutual|inductive|'
+    r'structure|class|deriving|command|builtin_initialize|by_elab|local|scoped)\b'
+    r'|\bset_option\s+(?!' + SAFE_OPTIONS + r'\b)'   # only whitelisted options
+    r'|#'                                              # Lean commands
+    r'|@\['                                            # attributes
+    r'|\bLean\.'                                       # meta-level API
+)
 DECL = re.compile(r'(?m)^theorem\s+([A-Za-z_][\w\.]*)\b')
 
 
