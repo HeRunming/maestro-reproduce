@@ -17,3 +17,6 @@ __pycache__/
 # Local provider configs (private endpoints); copy from configs/*.example.toml
 configs/claude.toml
 configs/gpt.toml
+
+# Paper text (arXiv non-exclusive license): regenerate with tasks/jsp000513/make_reference.py
+tasks/jsp000513/reference.tex

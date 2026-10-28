@@ -180,3 +180,12 @@ cli.main()
     assert proc.wait(timeout=60) == 1
     result = json.loads((tmp_path / 'run' / 'result.json').read_text())
     assert result['status'] == 'cancelled'
+
+
+async def test_pause_turn_resumes_and_empty_reply_reports_stop():
+    s = ScriptedSession([Reply('', [], 0, 'pause_turn'), Reply('{"ok":1}', [], 0, 'end_turn')])
+    assert await interact(s, 'go', None, 3) == {'ok': 1}
+    assert s.history[1]['user'] is None  # resumed without a new user message
+    s = ScriptedSession([Reply('', [], 0, 'end_turn'), Reply('', [], 0, 'end_turn')])
+    with pytest.raises(ValueError, match='stop_reason=end_turn'):
+        await interact(s, 'go', None, 3)

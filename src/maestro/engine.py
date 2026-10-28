@@ -268,7 +268,9 @@ class Engine:
         else:
             await self.actions(decision)
 
-    async def run(self, task: Path, directory: Path):
+    async def run(self, task: Path, directory: Path, resume: Path | None = None):
+        """Prove `task`. With `resume`, start from that complete source (e.g. a revision file
+        of an earlier run); it must pass the same Lean, axiom and root-type checks."""
         cfg = self.config
         self.ws = Workspace(Contract.load(task), Lean(cfg.project, cfg.compile_seconds), directory)
         ws = self.ws
@@ -278,12 +280,19 @@ class Engine:
             self.mcp = LoogleClient()
             ws.journal.record('mcp_enabled', client='LoogleClient')
         try:
-            await ws.initialize()
+            await ws.initialize()  # pins the root's elaborated type before any resumed source
+            if resume:
+                result = await ws.commit(resume.read_text(), ws.revision)
+                ws.journal.record('resumed', path=str(resume), closed=len(result.closed),
+                                  open=result.open, frontier=result.frontier)
             if cfg.mode == 'maestro':
                 self.coordinator = self.session('coordinator')
-            self.dispatch(cfg.initial_role if cfg.mode != 'plain' else 'prover', ws.contract.root.name)
+            if not resume:
+                self.dispatch(cfg.initial_role if cfg.mode != 'plain' else 'prover', ws.contract.root.name)
+            elif not ws.proved:
+                self.dispatch_frontier()
             async with asyncio.timeout(cfg.wall_seconds):
-                for _ in range(cfg.max_events):
+                for _ in range(0 if ws.proved else cfg.max_events):
                     event = await self.events.get()
                     if event.kind != 'progress':
                         self.running.pop(event.worker_id, None)

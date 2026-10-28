@@ -40,7 +40,7 @@ async def execute(args):
         print(result.model_dump_json(indent=2))
         return 0 if result.status == 'proved' else 1
     if args.command == 'prove':
-        result = await Engine(config).run(args.task, args.run_dir)
+        result = await Engine(config).run(args.task, args.run_dir, args.resume)
         print(result.model_dump_json(indent=2))
         return 0 if result.status in ('proved', 'falsified') else 1
     if args.command == 'report':
@@ -96,6 +96,8 @@ def main():
         p.add_argument('--run-dir', type=Path, default=Path('runs') / name)
         if name == 'prove':
             p.add_argument('task', type=Path)
+            p.add_argument('--resume', type=Path, help='start from this complete source, '
+                           'e.g. runs/<old>/revision-00030.lean (re-checked by Lean)')
         if name == 'fatex':
             p.add_argument('operation', choices=['list', 'validate', 'run'])
             p.add_argument('--ids', nargs='+', type=int, choices=range(1, 101))

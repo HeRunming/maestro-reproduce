@@ -192,12 +192,14 @@ async def interact(session, prompt, toolbox, max_turns):
         prompt = None
         if reply.stop in ('max_tokens', 'length', 'refusal', 'content_filter'):
             raise ValueError(f'provider stopped without valid output: {reply.stop}')
+        if reply.stop == 'pause_turn' and not reply.calls:
+            continue  # server paused a long turn; resending the history resumes it
         if not reply.calls:
             try:
                 return object_response(reply.text)
             except (ValueError, TypeError) as exc:
                 if repaired:
-                    raise
+                    raise ValueError(f'{exc} (stop_reason={reply.stop})') from exc
                 repaired = True
                 prompt = REPAIR.format(error=str(exc)[:200])
                 continue
