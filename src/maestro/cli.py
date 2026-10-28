@@ -1,6 +1,7 @@
 """Command line entrypoints. Offline demo never requests credentials."""
 import argparse
 import asyncio
+import signal
 import json
 from pathlib import Path
 import tempfile
@@ -24,7 +25,15 @@ async def demo(config, directory):
     return await Engine(config, factory).run(task, directory)
 
 
+def graceful_stop():
+    # SIGTERM cancels the main task so Engine.run records 'cancelled' and closes sessions,
+    # instead of the process dying without result.json.
+    loop, task = asyncio.get_running_loop(), asyncio.current_task()
+    loop.add_signal_handler(signal.SIGTERM, task.cancel)
+
+
 async def execute(args):
+    graceful_stop()
     config = Config.load(args.config) if args.config else Config()
     if args.command == 'demo':
         result = await demo(config, args.run_dir)

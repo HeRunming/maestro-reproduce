@@ -6,27 +6,82 @@ from .models import Goal
 
 START = "-- MAESTRO GENERATED BEGIN"
 END = "-- MAESTRO GENERATED END"
-# This is an input boundary scanner, not the proof-completion oracle.
-TOKEN = re.compile(r'/\-|-/|--[^\n]*|"(?:\\.|[^"\\])*"', re.S)
+# This is an input boundary scanner, not the proof-completion oracle. It is a small Lean
+# lexer: comments (nested), string, char and «quoted-name» literals are recognized with
+# Lean's own precedence, so text that Lean compiles as code can never be classified as a
+# comment. Literal forms it does not model (raw and interpolated strings) are rejected.
+CHAR = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|.)|[^'\\\n])'")
+IDENT_TAIL = re.compile(r"[\w'!?₀-ₜᵢ-ᵪⱼ]")
+
+
+def lex(text: str):
+    """Yield (kind, start, end) spans: 'code', 'comment' or 'literal'."""
+    i, n, depth, code = 0, len(text), 0, 0
+    def flush(upto):
+        return [('code', code, upto)] if upto > code else []
+    while i < n:
+        if depth:
+            # Inside a block comment only nesting markers matter (no strings or chars).
+            if text.startswith('/-', i):
+                depth, i = depth + 1, i + 2
+            elif text.startswith('-/', i):
+                depth, i = depth - 1, i + 2
+                if not depth:
+                    yield ('comment', begin, i)
+                    code = i
+            else:
+                i += 1
+            continue
+        if text.startswith('/-', i):
+            yield from flush(i)
+            depth, begin, i = 1, i, i + 2
+            continue
+        if text.startswith('--', i):
+            yield from flush(i)
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            yield ('comment', i, j)
+            i = code = j
+            continue
+        c = text[i]
+        prev = text[i - 1] if i else ''
+        j = None
+        if c == '"':
+            if prev == '!' or re.search(r'(?<![\w.])r#*$', text[max(0, i - 8):i]):
+                raise ValueError("raw or interpolated string literals are not supported")
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == '\\' else 1
+            if j >= n:
+                raise ValueError("unterminated string literal")
+            j += 1
+        elif c == "'" and not IDENT_TAIL.match(prev):
+            m = CHAR.match(text, i)
+            j = m.end() if m else None
+        elif c == '«':  # «quoted name»: opaque, may contain any character except »
+            j = text.find('»', i)
+            if j < 0:
+                raise ValueError("unterminated «quoted name»")
+            j += 1
+        if j is None:
+            i += 1
+            continue
+        yield from flush(i)
+        yield ('literal', i, j)
+        i = code = j
+    if depth:
+        raise ValueError("unterminated Lean comment")
+    yield from flush(n)
 
 
 def uncomment(text: str) -> str:
-    out, pos, depth = [], 0, 0
-    for m in TOKEN.finditer(text):
-        if not depth:
-            out.append(text[pos:m.start()])
-        token = m.group()
-        if token == '/-':
-            depth += 1
-        elif token == '-/' and depth:
-            depth -= 1
-        elif not depth and token.startswith('"'):
-            out.append(token)
-        pos = m.end()
-    if depth:
-        raise ValueError("unterminated Lean comment")
-    out.append(text[pos:])
-    return ''.join(out)
+    return ''.join(text[a:b] for kind, a, b in lex(text) if kind != 'comment')
+
+
+def mask(text: str) -> str:
+    """Same length as text; comments and literal contents blanked (newlines kept)."""
+    blank = lambda t: re.sub(r'[^\n]', ' ', t)
+    return ''.join(text[a:b] if kind == 'code' else blank(text[a:b]) for kind, a, b in lex(text))
 
 
 # `open` is allowed (proofs need `open Classical in`). Workspace pins the root's
@@ -52,7 +107,7 @@ GEN_DECL = re.compile(r'(?m)^(theorem|lemma|def|noncomputable\s+def)\s+([A-Za-z_
 
 def assignment(text: str, start: int = 0) -> int:
     """Find declaration assignment outside binder/type parentheses and comments."""
-    clean = re.sub(r'--[^\n]*|/\-.*?\-/', lambda m: ' ' * len(m[0]), text, flags=re.DOTALL)
+    clean = mask(text)
     depth = 0
     for i in range(start, len(clean) - 1):
         if clean[i] in '([{':

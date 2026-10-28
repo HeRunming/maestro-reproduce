@@ -36,6 +36,13 @@ class Engine:
         self.coordinator = None
         self.context_chars = 0
         self.decisions = []
+        self.reference = config.reference.read_text() if config.reference else None
+
+    def brief(self, message, first=True):
+        """Attach the reference text to the first message of a session."""
+        if self.reference and first:
+            return {**message, 'reference': self.reference}
+        return message
 
     def session(self, role):
         s = self.factory(role)
@@ -70,7 +77,7 @@ class Engine:
                       negation=role == 'falsifier')
         try:
             async with self.gate:
-                request = json.dumps({'goal': goal, 'guidance': guidance, 'source': source})
+                request = json.dumps(self.brief({'goal': goal, 'guidance': guidance, 'source': source}))
                 if role == 'planner':
                     output = await self.plan(goal, guidance, source, tools)
                 else:
@@ -90,11 +97,12 @@ class Engine:
         """Proposer → judge (up to planner_rounds revisions) → translator."""
         proposer, judge = self.session('proposer'), self.session('judge')
         read = Tools(self.ws, source, tools.directory, readonly=True, mcp=self.mcp)
-        request = json.dumps({'goal': goal, 'guidance': guidance, 'source': source})
+        request = json.dumps(self.brief({'goal': goal, 'guidance': guidance, 'source': source}))
         plan = verdict = None
         for round_ in range(1, self.config.planner_rounds + 1):
             plan = await interact(proposer, request, read, self.config.max_turns)
-            verdict = await interact(judge, json.dumps({'goal': goal, 'source': source, 'plan': plan}),
+            verdict = await interact(judge, json.dumps(self.brief({'goal': goal, 'source': source, 'plan': plan},
+                                                                  first=round_ == 1)),
                                      read, self.config.max_turns)
             self.ws.journal.record('planner_round', goal=goal, round=round_, passed=passed(verdict),
                                    plan=plan, verdict=verdict)
@@ -104,7 +112,7 @@ class Engine:
         else:
             raise ValueError('planner judge rejected plan: ' + json.dumps(verdict)[:1500])
         output = await interact(self.session('translator'),
-                                json.dumps({'goal': goal, 'source': source, 'plan': plan}),
+                                json.dumps(self.brief({'goal': goal, 'source': source, 'plan': plan})),
                                 tools, self.config.max_turns)
         return {**output, 'plan': plan, 'verdict': verdict}
 
@@ -214,6 +222,7 @@ class Engine:
         state = {}
         if self.context_chars > cfg.coordinator_context_chars:
             state.update(self.rotate())
+        state = self.brief(state, first=self.context_chars == 0)
         state.update({'revision': ws.revision, 'open': ws.open_goals, 'frontier': ws.frontier,
                       'event': event.model_dump(),
                       'active': [{'worker_id': k, 'role': r, 'goal': g}

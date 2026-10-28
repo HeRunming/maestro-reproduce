@@ -39,6 +39,9 @@ class Config(Record):
     # full source, and its session is restarted (with recent decisions) past the second limit.
     coordinator_source_chars: int = Field(default=40000, ge=1000)
     coordinator_context_chars: int = Field(default=400000, ge=10000)
+    # Optional human-readable mathematical source (paper text) given to every worker and
+    # the coordinator, for formalizing a known proof. It never enters the Lean source.
+    reference: Path | None = None
     # Testing knob: start with the planner instead of a prover (exercises decomposition).
     initial_role: Literal['prover', 'planner'] = 'prover'
 

@@ -51,3 +51,35 @@ async def test_full_negation_certificate(tmp_path):
         return ScriptedSession([Reply('{"negation_proof":"by norm_num","detail":"2+2=4"}', [], 0, 'end_turn')])
     result = await Engine(Config(), factory).run(task, tmp_path / 'run')
     assert result.status == 'falsified', result.detail
+
+
+HIDDEN = '#check Nat\nset_option debug.skipKernelTC true in\n'
+SMUGGLE = {
+    # A char literal containing `"` desynchronized the old string matcher.
+    'char-literal quote': "def q : Char := '\"'\ndef s : String := \"/-\"\n" + HIDDEN + 'def t : String := "-/"\n',
+    # A `"` inside a block comment used to swallow the real `-/`.
+    'quote in comment': '/- " -/\n' + HIDDEN + '/- " -/\n',
+    'apostrophe in comment': "/- don't -/\n" + HIDDEN + "/- isn't -/\n",
+    'quoted name': 'theorem «x/-» : True := trivial\n' + HIDDEN + 'theorem «-/» : True := trivial\n',
+    'raw string': 'def s : String := r#"/-"#\n' + HIDDEN + 'def t : String := r#"-/"#\n',
+    'interpolated string': 'def s : String := s!"{"/-"}"\n' + HIDDEN + 'def t : String := "-/"\n',
+    'escaped quote': 'def s : String := "\\"/-"\n' + HIDDEN + 'def t : String := "-/"\n',
+}
+
+
+@pytest.mark.parametrize('name', list(SMUGGLE))
+def test_scanner_cannot_be_desynchronized(name):
+    c = Contract.load(PROJECT / 'examples/add_zero.lean')
+    with pytest.raises(ValueError):
+        c.validate(c.render(SMUGGLE[name] + c.root.signature + ' := by simp'))
+
+
+@pytest.mark.parametrize('code', [
+    "theorem t (h' : 1 = 1) : h' = h' := rfl",                # primes in identifiers
+    "theorem t : ('a' : Char) ≠ 'b' := by decide",           # char literals
+    "theorem t : \"a -- /- b\".length = 9 := by decide",     # comment markers inside a string
+    "/- nested /- comment -/ with \" and ' inside -/\ntheorem t : True := trivial",
+])
+def test_scanner_accepts_ordinary_lean(code):  # «quoted» theorem names are rejected (safe)
+    c = Contract.load(PROJECT / 'examples/add_zero.lean')
+    c.validate(c.render(code + '\n\n' + c.root.signature + ' := by simp'))

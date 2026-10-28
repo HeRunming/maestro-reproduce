@@ -1,5 +1,6 @@
 """Offline robustness: model-output parsing, provider retries, cohorts, region boundary."""
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -114,3 +115,68 @@ def test_region_accepts_lemma_keyword():
     goals = C.validate(C.render('lemma helper (n : ℕ) : n + 0 = n := by simp\n\n'
                                 + C.root.signature + ' := helper n'))
     assert [g.name for g in goals] == ['helper', 'add_zero_demo']
+
+
+@pytest.mark.lean
+async def test_reference_reaches_every_role_once(tmp_path):
+    ref = tmp_path / 'paper.tex'
+    ref.write_text('\\begin{lemma} n + 0 = n \\end{lemma}')
+    seen = {}
+    task = PROJECT / 'examples/two_part.lean'
+    c = Contract.load(task)
+    scaffold = c.render('theorem a (n : ℕ) : n + 0 = n := by\n  simp\n\n'
+                        'theorem b (n : ℕ) : 0 + n = n := by\n  simp\n\n'
+                        + c.root.signature + ' := ⟨a n, b n⟩')
+    class Spy(ScriptedSession):
+        def __init__(self, role, replies):
+            super().__init__(replies)
+            self.role = role
+        async def request(self, user, tools):
+            if user is not None:
+                seen.setdefault(self.role, []).append('reference' in json.loads(user))
+            return await super().request(user, tools)
+    def factory(role):
+        replies = {
+            'proposer': [Reply('{"strategy":"split"}', [], 0, 'end_turn')],
+            'judge': [Reply('{"direction_gate_pass":true,"layering_gate_pass":true,"blockers":[]}', [], 0, 'end_turn')],
+            'translator': [Reply('', [('w', 'write_proof', {'text': scaffold})], 0, 'tool_use'),
+                           Reply('{"translated":true}', [], 0, 'end_turn')],
+            'coordinator': [Reply('{"decision":"CONTINUE"}', [], 0, 'end_turn')] * 5,
+        }[role]
+        return Spy(role, replies)
+    cfg = Config(reference=ref, initial_role='planner')
+    result = await Engine(cfg, factory).run(task, tmp_path / 'run')
+    assert result.status == 'proved', result.detail
+    for role in ('proposer', 'judge', 'translator'):
+        assert seen[role][0] is True, role
+    assert seen.get('coordinator', [True])[0] is True
+    assert all(not x for x in seen.get('coordinator', [])[1:])
+
+
+@pytest.mark.lean
+def test_sigterm_writes_cancelled_result(tmp_path):
+    import os, signal, subprocess, sys, time
+    script = tmp_path / 'stall.py'
+    script.write_text(f'''
+import asyncio, sys
+sys.argv = ['maestro', 'prove', {str(PROJECT / 'examples/add_zero.lean')!r}, '--run-dir', {str(tmp_path / 'run')!r}]
+from maestro import cli, engine
+from maestro.agent import ScriptedSession
+class Stall(ScriptedSession):
+    async def request(self, user, tools):
+        await asyncio.Event().wait()
+orig = engine.Engine.__init__
+def init(self, config, session_factory=None):
+    orig(self, config, lambda role: Stall([]))
+engine.Engine.__init__ = init
+cli.main()
+''')
+    proc = subprocess.Popen([sys.executable, str(script)], cwd=PROJECT, env=os.environ.copy())
+    deadline = time.time() + 120
+    while time.time() < deadline and not (tmp_path / 'run' / 'revision-00001.lean').exists():
+        time.sleep(0.5)
+    time.sleep(1)
+    proc.send_signal(signal.SIGTERM)
+    assert proc.wait(timeout=60) == 1
+    result = json.loads((tmp_path / 'run' / 'result.json').read_text())
+    assert result['status'] == 'cancelled'
