@@ -70,6 +70,18 @@ maestro --config configs/claude.toml fatex run --ids 1 2 3 --run-dir runs/batch
 Budgets (output tokens reserved before each request, events, wall time, turns, compile time)
 are hard harness limits.
 
+Formalizing a known result: `reference = "path/to/paper.tex"` gives every worker and the
+coordinator the human source (it never enters the Lean source). A run that ran out of budget
+can continue from any earlier revision; the source is re-checked exactly like a commit:
+
+```bash
+maestro --config cfg.toml prove TASK.lean --resume runs/old/revision-00030.lean --run-dir runs/new
+```
+
+`tasks/jsp000513/` holds the JSP-000513 statement (Dvořák–Hu–Sereni: a 4-choosable graph that
+is not (8:2)-choosable) with an independent statement audit. Its reference text is built from
+the arXiv source by `make_reference.py` and is not committed (arXiv non-exclusive license).
+
 ## Observed runs (smoke tests, single run each)
 
 | Problem | Backend | Result | Output tokens |
@@ -96,8 +108,11 @@ decomposition path runs even when a prover would succeed directly.
 
 A proof counts as closed only if the full file compiles and the theorem's transitive axioms are
 within `propext`, `Classical.choice`, `Quot.sound`. `sorryAx` marks an open obligation.
-Generated regions may contain only named theorems; imports, definitions, namespaces, settings,
-attributes, instances and root statements are frozen.
+Generated regions may contain only theorems and plain unindented `def`s; imports, frozen
+definitions, namespaces, settings, attributes, instances, notation and root statements are
+frozen. A small Lean lexer (comments, strings, char literals) enforces this boundary, and the
+root's elaborated type is pinned by hash, so neither `open ... in` nor a shadowing `def` can
+change what the root statement means.
 
 Lean checks proof validity; it is not an OS sandbox. Model tools cannot run shell commands or
 write outside their worker directory. The only network access exposed to models is the Loogle
