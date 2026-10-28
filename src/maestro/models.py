@@ -84,10 +84,12 @@ class Event(Record):
 
 
 class Goal(Record):
+    """A generated declaration. Only theorems are goals; defs are supporting data."""
     name: str
     signature: str
     proof: str = "by\n  sorry"
     parent: str | None = None
+    kind: str = "theorem"
 
 
 class Inspection(Record):

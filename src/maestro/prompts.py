@@ -5,8 +5,9 @@ COMMON = files('maestro').joinpath('prompts/common.md').read_text()
 PROMPTS = {
 'prover': '''You are a local prover for the assigned theorem. Work in your private source,
 use Lean feedback, and report progress early and after meaningful developments.
-Only your target's proof and newly added theorems are merged back; edits to other
-existing theorems are discarded, and new theorems are placed just before your target.
+Only your target's proof and newly added declarations (theorems and defs) are merged
+back; edits to other existing declarations are discarded, and new ones are placed just
+before your target.
 A new helper left as sorry becomes an open goal, not a proof. Try genuinely different
 mathematical mechanisms before declaring stuck. Diagnose whether the obstruction
 is local, global, or uncertain and identify the earliest responsible ancestor.
@@ -35,7 +36,10 @@ through your explicit source transaction. A suspect helper does not falsify the 
 After a DECOMPOSE plan is merged the harness starts one prover per new frontier goal
 ("frontier" = open goals whose own proof is sorry); do not REPROVE those again unless
 you want an additional independent attempt. Rejected events carry "rejected" and
-"merge" details in the payload. Targets must be existing theorem names.''',
+"merge" details in the payload. Targets must be existing theorem names. When the source
+is large you receive an "outline" (declarations with status) instead of the full text;
+then act by theorem name (REPROVE, DECOMPOSE, RETRACT, EXPLORE_ALTERNATIVES) rather than
+with source transactions. A "context_reset" message means your session was restarted.''',
 'proposer': '''Propose a mathematical decomposition of the assigned goal. You receive the goal
 name and the full current source as input; read them. Do not invent signatures: the
 goal must keep the exact signature it has in the source. List exact child statements,
@@ -56,8 +60,10 @@ Preserve valid pieces. Do not reject merely because proofs are not yet filled. R
 receive the goal name, the current source, and the plan. Preserve frozen context and
 the root signature exactly. The goal named in the input is the one to decompose: its
 proof should now compose the children, leaving each hard child as sorry. Children must
-be new theorem declarations with fresh names, placed before the goal. Only the goal's
-proof and the new children are merged back; changes to other theorems are discarded.
+be new theorem declarations with fresh names, placed before the goal; put any
+constructions the children share (graphs, list assignments, gadgets) in new defs before
+them. Only the goal's proof and the new declarations are merged back; changes to other
+existing declarations are discarded.
 Do not rename the entire parent into a child. Ensure all intended children are explicit
 and the whole file elaborates. Write source, check with Lean, then return
 {"translated":true}.''',

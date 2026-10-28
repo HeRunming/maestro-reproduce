@@ -33,6 +33,9 @@ class Engine:
         self.mcp = None
         self.cohorts = {}
         self.sent_revision = None
+        self.coordinator = None
+        self.context_chars = 0
+        self.decisions = []
 
     def session(self, role):
         s = self.factory(role)
@@ -119,8 +122,8 @@ class Engine:
     def target(self, action):
         ws = self.ws
         name = ws.contract.root.name if action.target in ('root', '') else action.target
-        if name not in {g.name for g in ws.goals}:
-            raise ValueError(f'{action.op}: unknown target {name}')
+        if name not in {g.name for g in ws.goals if g.kind == 'theorem'}:
+            raise ValueError(f'{action.op}: unknown theorem {name}')
         return name
 
     async def actions(self, decision):
@@ -188,21 +191,51 @@ class Engine:
                 ws.journal.record('explorer_cohort_complete', cohort_id=cohort_id, count=cohort['size'])
                 event.payload['cohort_complete'] = cohort['results']
 
-    async def consult(self, coordinator, event):
-        ws = self.ws
-        state = {'revision': ws.revision, 'open': ws.open_goals, 'frontier': ws.frontier,
-                 'event': event.model_dump(),
-                 'active': [{'worker_id': k, 'role': r, 'goal': g} for k, (_, r, g) in self.running.items()]}
+    def outline(self):
+        ws, check = self.ws, self.ws.check_result
+        closed = set(check.closed) if check else set()
+        frontier = set(ws.frontier)
+        return [{'kind': g.kind, 'name': g.name, 'signature': g.signature[:400],
+                 'status': '' if g.kind == 'def' else 'closed' if g.name in closed
+                           else 'frontier' if g.name in frontier else 'open'} for g in ws.goals]
+
+    def rotate(self):
+        """Restart the coordinator with a short history once its context grows too large."""
+        self.coordinator = self.session('coordinator')
+        self.context_chars = 0
+        self.sent_revision = None
+        self.ws.journal.record('coordinator_rotated', decisions=len(self.decisions))
+        return {'context_reset': 'Your previous session was closed because its context grew too '
+                'large. Recent decisions (oldest first) follow; the current state is authoritative.',
+                'recent_decisions': self.decisions[-12:]}
+
+    async def consult(self, event):
+        ws, cfg = self.ws, self.config
+        state = {}
+        if self.context_chars > cfg.coordinator_context_chars:
+            state.update(self.rotate())
+        state.update({'revision': ws.revision, 'open': ws.open_goals, 'frontier': ws.frontier,
+                      'event': event.model_dump(),
+                      'active': [{'worker_id': k, 'role': r, 'goal': g}
+                                 for k, (_, r, g) in self.running.items()]})
+        large = len(ws.source) > cfg.coordinator_source_chars
         # The coordinator session keeps history; resend source only when it changed.
-        if ws.revision != self.sent_revision:
-            state['source'] = ws.source
-        else:
+        if ws.revision == self.sent_revision:
             state['source_unchanged_since_revision'] = ws.revision
-        if event.payload.get('source') == ws.source:
-            state['event']['payload'] = {k: v for k, v in event.payload.items() if k != 'source'}
+        elif large:
+            state['outline'] = self.outline()
+            state['source_omitted'] = (f'{len(ws.source)} characters; too large to resend. Source '
+                                       'transactions are impractical; act by theorem name.')
+        else:
+            state['source'] = ws.source
+        payload = event.payload
+        if 'source' in payload and (payload['source'] == ws.source or large):
+            state['event']['payload'] = {k: v for k, v in payload.items() if k != 'source'}
         self.sent_revision = ws.revision
+        message = json.dumps(state, default=str)
+        self.context_chars += len(message)
         try:
-            raw = await interact(coordinator, json.dumps(state, default=str), None, self.config.max_turns)
+            raw = await interact(self.coordinator, message, None, cfg.max_turns)
             decision = Decision.model_validate(raw)
         except (BudgetExceeded, asyncio.CancelledError):
             raise
@@ -211,7 +244,14 @@ class Engine:
             return
         except Exception as exc:  # transport failure after retries: keep the run alive
             ws.journal.record('coordinator_error', error=type(exc).__name__, detail=str(exc)[:2000])
+            # A request rejected for size would fail forever; start fresh next time.
+            if getattr(exc, 'status_code', None) in (400, 413):
+                self.context_chars = cfg.coordinator_context_chars + 1
             return
+        self.context_chars += len(json.dumps(raw, default=str))
+        self.decisions.append({'revision': ws.revision, 'decision': decision.decision,
+                               'actions': [(a.op, a.target) for a in decision.actions],
+                               'diagnosis': decision.diagnosis[:600]})
         ws.journal.record('decision', **decision.model_dump())
         if decision.decision in ('PREPARE_DECOMPOSITION', 'SWITCH_TO_DECOMPOSITION') and not decision.actions:
             if event.goal in ws.open_goals:
@@ -224,7 +264,6 @@ class Engine:
         self.ws = Workspace(Contract.load(task), Lean(cfg.project, cfg.compile_seconds), directory)
         ws = self.ws
         status, detail = Status.ERROR, ''
-        coordinator = None
         if cfg.mcp.enabled:
             from .mcp import LoogleClient
             self.mcp = LoogleClient()
@@ -232,7 +271,7 @@ class Engine:
         try:
             await ws.initialize()
             if cfg.mode == 'maestro':
-                coordinator = self.session('coordinator')
+                self.coordinator = self.session('coordinator')
             self.dispatch(cfg.initial_role if cfg.mode != 'plain' else 'prover', ws.contract.root.name)
             async with asyncio.timeout(cfg.wall_seconds):
                 for _ in range(cfg.max_events):
@@ -257,7 +296,7 @@ class Engine:
                         if not self.running:
                             self.dispatch('planner', ws.frontier[0])
                         continue
-                    await self.consult(coordinator, event)
+                    await self.consult(event)
                     if ws.proved:  # coordinator source transactions can close the last goal
                         break
                     if not self.running:

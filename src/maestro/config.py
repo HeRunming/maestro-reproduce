@@ -35,6 +35,10 @@ class Config(Record):
     planner_rounds: int = Field(default=6, ge=1, le=6)
     explorer_cohort: int = Field(default=3, ge=1, le=15)
     mode: Literal['maestro', 'plain', 'naive'] = 'maestro'
+    # Coordinator context: above this size it gets a declaration outline instead of the
+    # full source, and its session is restarted (with recent decisions) past the second limit.
+    coordinator_source_chars: int = Field(default=40000, ge=1000)
+    coordinator_context_chars: int = Field(default=400000, ge=10000)
     # Testing knob: start with the planner instead of a prover (exercises decomposition).
     initial_role: Literal['prover', 'planner'] = 'prover'
 

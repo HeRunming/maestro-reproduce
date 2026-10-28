@@ -10,7 +10,7 @@ from maestro.models import Decision
 PROJECT = Path('/data/hrm/lean_workspace')
 
 
-@pytest.mark.parametrize('code', ['axiom bad : False', 'def x : Nat := 0',
+@pytest.mark.parametrize('code', ['axiom bad : False', 'abbrev x : Nat := 0',
     'instance : Inhabited Nat := ⟨0⟩', '@[simp] theorem t : True := by trivial'])
 def test_generated_region_blocks_trust_or_global_effects(code):
     c = Contract.load(PROJECT / 'examples/add_zero.lean')

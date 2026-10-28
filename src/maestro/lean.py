@@ -18,7 +18,7 @@ class Lean:
 
     async def check(self, contract: Contract, source: str, directory: Path) -> Check:
         try:
-            goals = contract.validate(source)
+            goals = [g for g in contract.validate(source) if g.kind == 'theorem']
         except ValueError as e:
             return Check(ok=False, output=str(e))
         directory.mkdir(parents=True, exist_ok=True)

@@ -101,16 +101,17 @@ class Workspace:
     def rebase(self, name: str, candidate: str):
         """Goal-wise merge of a worker's private source onto the current source.
 
-        Takes only the target's new proof and genuinely new theorems from the candidate.
-        Every other existing goal keeps its current proof, so a sibling proved after the
-        worker's snapshot is never reverted. New theorems are inserted, in candidate order,
-        immediately before the target, which is the only consumer that can rely on them.
+        Takes only the target's new proof and genuinely new declarations (theorems and
+        defs) from the candidate. Every other existing declaration keeps its current text,
+        so a sibling proved after the worker's snapshot is never reverted and existing defs
+        are never redefined. New declarations are inserted, in candidate order, immediately
+        before the target, which is the only consumer that can rely on them.
         """
         incoming = self.contract.validate(candidate)
         current = self.goals
         by_name = {g.name: g for g in current}
         mine = {g.name: g for g in incoming}
-        if name not in by_name:
+        if name not in by_name or by_name[name].kind != 'theorem':
             raise ValueError(f'unknown target {name}')
         if name not in mine:
             raise ValueError(f'candidate removed target {name}')

@@ -30,22 +30,24 @@ def uncomment(text: str) -> str:
 
 
 # `open` is allowed (proofs need `open Classical in`). Workspace pins the root's
-# elaborated type hash, so an `open ... in` cannot change what the root statement means.
+# elaborated type hash, so an `open ... in` or a generated `def` that shadows a name
+# cannot change what the root statement means.
 SAFE_OPTIONS = r'(?:maxHeartbeats|maxRecDepth|synthInstance\.maxHeartbeats|synthInstance\.maxSize|linter\.[\w.]+|pp\.[\w.]+|trace\.[\w.]+)'
 FORBIDDEN = re.compile(
     r'\b(import|namespace|end|section|axiom|constant|opaque|unsafe|partial|macro|elab|syntax|'
-    r'initialize|attribute|run_tac|run_elab|run_cmd|run_meta|implemented_by|extern|def|abbrev|'
+    r'initialize|attribute|run_tac|run_elab|run_cmd|run_meta|implemented_by|extern|abbrev|'
     r'instance|example|notation|infix|infixl|infixr|prefix|postfix|export|mutual|inductive|'
     r'structure|class|deriving|command|builtin_initialize|by_elab|local|scoped|variable|universe|'
-    r'private|protected|noncomputable)\b'
+    r'private|protected)\b'
     r'|\bset_option\s+(?!' + SAFE_OPTIONS + r'\b)'   # only whitelisted options
-    r'|#'                                              # Lean commands
+    r'|#[A-Za-z_]'                                     # Lean commands (#eval, #exit, ...)
     r'|@\['                                            # attributes
     r'|\bLean\.'                                       # meta-level API
 )
 DECL = re.compile(r'(?m)^theorem\s+([A-Za-z_][\w\.]*)\b')
-# Generated regions also accept `lemma` (Mathlib syntax; elaborates to a theorem).
-GEN_DECL = re.compile(r'(?m)^(?:theorem|lemma)\s+([A-Za-z_][\w\.]*)\b')
+# Generated regions accept theorems (`lemma` is Mathlib syntax for one) and plain data
+# definitions. Definitions are never goals: closure is decided by the theorems' axioms.
+GEN_DECL = re.compile(r'(?m)^(theorem|lemma|def|noncomputable\s+def)\s+([A-Za-z_][\w\.]*)\b')
 
 
 def assignment(text: str, start: int = 0) -> int:
@@ -67,19 +69,27 @@ def parse_goals(region: str) -> list[Goal]:
     if FORBIDDEN.search(clean):
         raise ValueError("unsupported or unsafe command in generated region")
     matches = list(GEN_DECL.finditer(clean))
+    # `def`/`noncomputable` may appear only as the keyword of a top-level declaration.
+    keywords = {m.start(1) + m[1].rfind('def') for m in matches if m[1] != 'theorem' and m[1] != 'lemma'}
+    keywords |= {m.start(1) for m in matches if m[1].startswith('noncomputable')}
+    stray = [m.start() for m in re.finditer(r'\b(def|noncomputable)\b', clean) if m.start() not in keywords]
+    if stray:
+        raise ValueError("`def` is only allowed as an unindented top-level declaration")
     if not matches or clean[:matches[0].start()].strip():
-        raise ValueError("generated region must contain only named theorem declarations")
+        raise ValueError("generated region must contain only named theorem and def declarations")
     goals = []
     for i, match in enumerate(matches):
         chunk = clean[match.start():matches[i+1].start() if i+1 < len(matches) else len(clean)]
         # ':=' in binders/default values is intentionally unsupported in generated signatures.
+        # Definitions by pattern-matching equations need `:= match ... with` instead.
         if ':=' not in chunk:
-            raise ValueError("missing theorem proof")
+            raise ValueError(f"missing ':=' in declaration {match[2]}")
         split = assignment(chunk)
         signature, proof = chunk[:split], chunk[split+2:]
-        goals.append(Goal(name=match[1], signature=signature.strip(), proof=proof.strip()))
+        kind = 'theorem' if match[1] in ('theorem', 'lemma') else 'def'
+        goals.append(Goal(name=match[2], signature=signature.strip(), proof=proof.strip(), kind=kind))
     if len({g.name for g in goals}) != len(goals):
-        raise ValueError("duplicate theorem name")
+        raise ValueError("duplicate declaration name")
     return goals
 
 
