@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "project": {
+    "root": "/data/hrm/lean_workspace/.setup-tmp/lean-verify-JSP-000513-20261028T100714Z/sources/checkout",
+    "repository": "local git repository /data/hrm/lean_workspace (remote https://github.com/HeRunming/maestro-reproduce does not contain this commit)",
+    "commit": "cb8b4285830f6ba69a686945ee7786a4ba7158c0",
+    "toolchain": "leanprover/lean4:v4.28.0"
+  },
+  "problems": [
+    {
+      "id": "JSP-000513",
+      "source": "awards catalog problems/catalog-0501-0600.md (blob 1adf510b, awards main fbaf42fc) section JSP-000513; Dvorak-Hu-Sereni, Adv. Comb. 2019:5, arXiv:1806.03880v2, dhs-aic.tex lines 106-111, 135-152, 155-162, 197-199",
+      "requirements": [
+        {
+          "id": "defs-set-coloring",
+          "description": "(L:b)-coloring: phi(v) subset of L(v), |phi(v)| = b, adjacent vertices get disjoint sets (dhs-aic.tex 135-152)",
+          "targets": ["main", "bridge"],
+          "coverage": "full",
+          "evidence": "report.md coverage matrix rows R1-R2; logs/AuditTarget.log (pp.all definitions); audit/build/AuditBridge.lean IsLbColoring; logs/AuditBridge.log"
+        },
+        {
+          "id": "defs-choosable",
+          "description": "(a:b)-choosable: (L:b)-colorable for every list assignment L with |L(v)| = a; colors from an arbitrary set; a-choosable = (a:1)-choosable",
+          "targets": ["main", "bridge"],
+          "coverage": "full",
+          "evidence": "report.md rows R3-R5; AuditJSP513.paper_of_submission / submission_of_paper_nat / classical_of_paper_one in audit/build/AuditBridge.lean; logs/AuditBridge.log"
+        },
+        {
+          "id": "thm2-existence",
+          "description": "Theorem 2: there exists a (finite) graph G that is 4-choosable but not (8:2)-choosable (dhs-aic.tex 197-199)",
+          "targets": ["main", "bridge"],
+          "coverage": "full",
+          "evidence": "JSP000513.exists_four_choosable_not_eight_two_choosable; AuditJSP513.intended_theorem2 and intended_theorem2_explicit; logs/check-proof-file.log, logs/AuditTarget.log, logs/AuditBridge.log, logs/leanchecker-*.log"
+        },
+        {
+          "id": "ert-question",
+          "description": "Catalog/ERT question: is every (a:b)-choosable graph (am:bm)-choosable (catalog asks for doubling, m = 2)? Answered negatively by a counterexample with a=4, b=1, m=2",
+          "targets": ["bridge"],
+          "coverage": "full",
+          "evidence": "AuditJSP513.not_ERTQuestion in audit/build/AuditBridge.lean; logs/AuditBridge.log"
+        }
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "id": "main",
+      "problem": "JSP-000513",
+      "role": "theorem",
+      "module": "JSP513Proof",
+      "source": "tasks/jsp000513/proof/JSP000513_proof.lean",
+      "declaration": "JSP000513.exists_four_choosable_not_eight_two_choosable"
+    },
+    {
+      "id": "bridge",
+      "problem": "JSP-000513",
+      "role": "bridge",
+      "module": "AuditBridge",
+      "source": "audit_harness/AuditBridge.lean",
+      "declaration": "AuditJSP513.intended_theorem2"
+    }
+  ]
+}

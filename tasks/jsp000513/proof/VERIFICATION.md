@@ -20,9 +20,16 @@ attempt (`../audit/`, verdict ACCEPT).
 | Standalone `lake env lean` + `#print axioms` (outside the harness) | `[propext, Classical.choice, Quot.sound]` |
 | `sorry`, `admit`, `native_decide`, `axiom`, `debug.*`, attributes, `#` commands in file | none |
 | Toolchain | Lean 4.28.0, Mathlib v4.28.0 (`8f9d9cff`) as pinned by FATE-X |
+| Kernel replay, `leanchecker --verbose JSP513Proof` (Lean 4.28's bundled lean4checker) | exit 0 |
+| Full kernel replay of the whole import closure, `leanchecker --fresh JSP513Proof` | exit 0, 3128 s |
+| Negative control: a false `1 = 2` added with `debug.skipKernelTC` | `#print axioms` reports no axioms; `leanchecker` rejects it (kernel type mismatch) |
+| Awards `lean-verify` skill, full workflow by an independent agent | **Verification passed** (`lean-verify/report.md`) |
 
-Not yet done: an independent kernel replay (e.g. lean4checker) and a review following the
-prize's `lean-verify` skill. The catalog lists JSP-000513 as not eligible to claim.
+The `lean-verify` auditor also wrote its own definitions from the paper (any color type,
+`Set`/`encard`) and derived Theorem 2 and the negation of the Erdős–Rubin–Taylor question
+from the submitted theorem (`lean-verify/AuditBridge.lean`), using only the three standard
+axioms. Remaining limitations: no container isolation and no checker independent of the Lean
+kernel. The catalog lists JSP-000513 as not eligible to claim.
 
 ## Proof structure (1226 lines, 7 defs, 58 theorems)
 
